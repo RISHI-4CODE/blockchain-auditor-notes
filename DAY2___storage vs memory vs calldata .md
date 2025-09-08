@@ -1,13 +1,16 @@
-# Day 2 — Storage vs Memory Deep Dive
+# Day 2 — Storage vs Memory Deep Dive (Auditor Notes)
 
 ---
 
-## Solidity Basics: Storage vs Memory vs Calldata
+## Storage vs Memory vs Calldata
 
 ### Storage
 - Permanent, lives on the blockchain.  
-- Every **write** is expensive in gas.  
-- Use only when data must persist across transactions.  
+- Every **write** is costly in gas (20k gas for a fresh slot, ~5k for overwrite).  
+- Vulnerability surface: **unbounded writes** (user-controlled `push`, `pop`, `delete`) can lead to gas griefing.  
+- **Audit check:** 
+  - Is storage being updated unnecessarily inside loops?  
+  - Can writes be moved to memory first, then persisted once?  
 
 ```solidity
 uint[] public numbers;
@@ -16,30 +19,38 @@ function addToStorage(uint _num) public {
     numbers.push(_num); // writes to storage
 }
 ```
-- 💰 Gas: Storage writes are the most expensive.
+- 💰 Observation: Heavy storage writes should be minimized. If user input drives storage growth without limits → possible DoS vector.
 
 ### Memory
+- Temporary, function-scoped.
+- Cheaper than storage but more expensive than calldata.
+- Data disappears after execution.
 
-- Temporary, exists only for the duration of a function call.
-- Cheaper than storage.
-- Data in memory does not persist after the function ends.
+### Audit check:
+
+- Is the developer copying large arrays to memory unnecessarily?
+- Memory allocation cost grows linearly with array size.
 
 ```solidity
 function copyToMemory() public view returns (uint[] memory) {
-    uint[] memory copyOfNumbers = numbers; // creates temp copy
+    uint[] memory copyOfNumbers = numbers; // temporary copy
     if (copyOfNumbers.length > 0) {
         copyOfNumbers[0] = 13; // doesn’t affect storage
     }
     return copyOfNumbers;
 }
 ```
-- 💡 Use case: **temporary** calculations, avoid modifying persistent state.
+
+- 💡 Best practice: Favor memory for intermediate calculations, but avoid copying large state arrays unless required.
 
 ### Calldata
+- Cheapest, read-only input location.
+- Ideal for external/public functions receiving large arrays.
 
-- Read-only, cheapest option.
-- Typically used for external function inputs.
-- Cannot be modified inside the function.
+### Audit check:
+
+- Ensure developers use calldata for function parameters when mutation isn’t needed.
+- Using memory instead of calldata can waste 10x+ gas.
 
 ```solidity
 function sumFromCalldata(uint[] calldata input) public pure returns (uint total) {
@@ -49,30 +60,37 @@ function sumFromCalldata(uint[] calldata input) public pure returns (uint total)
 }
 ```
 
-- ⚡ Gas: Most efficient when dealing with input arrays/structs.
+- ⚡ Gas: Most efficient. Not using calldata is a common audit finding.
 
 ### EVM Internals: Storage Slots
 
-- Each state variable is stored in a storage slot (32 bytes).
-- For dynamic arrays like numbers, the slot stores only the length.
--Actual array data starts at:
-```solidity
+- Each state variable sits in a 32-byte slot.
+- For dynamic arrays:
+- The slot stores only the array length.
+- The actual data begins at:
+
+```scss
 keccak256(slot_number)
+Example: if numbers is at slot 0, element i lives at keccak256(0) + i.
 ```
-- If numbers is at slot 0, its data starts at keccak256(0).
-- Index i lives at keccak256(0) + i.
 
-- 🔑 This isn’t encryption — it’s deterministic placement to avoid collisions.
-
+- 🔑 Audit perspective:
+- This layout is deterministic, not encrypted.
+- Attackers can read raw storage using tools (e.g., eth_getStorageAt).
+- Never store secrets in contract storage (passwords, private keys).
 
 ### Gas Comparison (from Remix tests)
+- Storage writes: highest cost.
+- Memory: moderate cost.
+- Calldata: ~10x cheaper in observed tests.
 
-- Storage write: most expensive.
-- Memory: moderately expensive.
-- Calldata: ~10x cheaper than memory/storage in observed tests.
+### Audit implication:
 
-- **Key Takeaways**
+- Inefficient use of storage is one of the top causes of excessive gas fees.
+- Gas inefficiency can lock users out if tx costs spike (→ economic DoS).
 
-- Default to calldata for external inputs whenever possible.
-- Use memory for temporary variables.
-- Reserve storage for data that must persist between transactions.
+### Key Takeaways for Auditors
+- Flag unnecessary storage writes, especially inside loops.
+- Recommend calldata for external function parameters whenever possible.
+- Watch for unbounded storage growth (potential DoS via gas).
+- Verify sensitive data is not stored in raw storage (since all storage is publicly readable).

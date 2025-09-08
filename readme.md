@@ -1,0 +1,1 @@
+my notes regarding blockchain auditor
